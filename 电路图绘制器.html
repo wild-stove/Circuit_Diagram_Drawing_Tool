@@ -1,0 +1,1600 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>电路图绘制器</title>
+<style>
+  :root{
+    --bg:#eef0f4; --panel:#fff; --line:#d8dbe2; --ink:#243447; --sub:#7a8798;
+    --accent:#2563eb; --accent-soft:#e5edff;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;overflow:hidden}
+  body{
+    font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
+    color:var(--ink);background:var(--bg);user-select:none;
+  }
+  #app{display:flex;height:100vh;width:100vw}
+
+  /* ---------- 左侧元件库 ---------- */
+  #side{
+    width:212px;flex:0 0 212px;background:var(--panel);border-right:1px solid var(--line);
+    display:flex;flex-direction:column;min-height:0;
+  }
+  .brand{padding:12px 14px 6px;font-weight:700;font-size:14px;letter-spacing:.3px}
+  .brand small{display:block;font-weight:400;font-size:11px;color:var(--sub);margin-top:4px;line-height:1.5}
+  #palette{flex:1;overflow-y:auto;padding:6px 8px 20px}
+  .group{font-size:11px;color:var(--sub);padding:10px 6px 4px;letter-spacing:.5px}
+  .grid{display:flex;flex-wrap:wrap;gap:6px}
+  .pal{
+    width:62px;border:1px solid var(--line);border-radius:7px;background:#fbfcfe;
+    display:flex;flex-direction:column;align-items:center;padding:2px 0 3px;cursor:grab;
+    transition:.12s;position:relative;
+  }
+  .pal:hover{border-color:var(--accent);background:var(--accent-soft);transform:translateY(-1px)}
+  .pal:active{cursor:grabbing}
+  .pal canvas{display:block}
+  .pal span{font-size:10px;color:var(--sub);transform:scale(.92);white-space:nowrap}
+  .pal:hover span{color:var(--accent)}
+
+  /* ---------- 右侧画布 ---------- */
+  #stage{flex:1;min-width:0;display:flex;flex-direction:column}
+  #bar{
+    display:flex;align-items:center;gap:6px;padding:7px 10px;background:var(--panel);
+    border-bottom:1px solid var(--line);flex-wrap:wrap;
+  }
+  #bar .sep{width:1px;height:20px;background:var(--line);margin:0 4px}
+  .fsgroup{display:flex;align-items:center;gap:2px;border:1px solid var(--line);border-radius:6px;
+    padding:1px 3px;background:#fbfcfe}
+  .fsgroup button{border:none;background:transparent;padding:3px 6px;font-size:12px;border-radius:4px}
+  .fsgroup button:hover{background:var(--accent-soft);color:var(--accent)}
+  #fsVal{min-width:30px;text-align:center;font-size:12px;color:var(--sub);
+    font-variant-numeric:tabular-nums;user-select:none}
+  button{
+    font:inherit;font-size:12px;padding:5px 10px;border:1px solid var(--line);border-radius:6px;
+    background:#fbfcfe;color:var(--ink);cursor:pointer;transition:.12s;
+  }
+  button:hover:not(:disabled){border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+  button:disabled{opacity:.38;cursor:default}
+  button.on{border-color:var(--accent);color:#fff;background:var(--accent)}
+  #cvwrap{position:relative;flex:1;min-height:0;overflow:hidden}
+  #cv{position:absolute;inset:0;display:block;cursor:crosshair}
+  #status{
+    position:absolute;left:10px;bottom:8px;font-size:11px;color:var(--sub);
+    background:rgba(255,255,255,.86);border:1px solid var(--line);border-radius:6px;
+    padding:3px 9px;pointer-events:none;font-variant-numeric:tabular-nums;
+  }
+  #help{
+    position:absolute;right:10px;bottom:8px;font-size:11px;color:var(--sub);
+    background:rgba(255,255,255,.86);border:1px solid var(--line);border-radius:6px;
+    padding:3px 9px;pointer-events:none;
+  }
+  #labelEditor{
+    position:absolute;display:none;z-index:20;transform:translate(-50%,-50%);
+    font:12px/1.3 inherit;font-family:inherit;color:var(--ink);
+    border:1px solid var(--accent);border-radius:5px;padding:3px 6px;min-width:70px;
+    outline:none;box-shadow:0 3px 12px rgba(0,0,0,.16);background:#fff;text-align:center;
+  }
+  .toast{
+    position:absolute;left:50%;top:16px;transform:translateX(-50%);
+    background:#243447;color:#fff;font-size:12px;padding:6px 14px;border-radius:6px;
+    opacity:0;transition:.25s;pointer-events:none;z-index:30;
+  }
+  .toast.show{opacity:.92}
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="side">
+    <div class="brand">⚡ 电路图绘制器<small>拖元件入画布 · 引脚拖出导线 · R 旋转</small></div>
+    <div id="palette"></div>
+  </aside>
+  <main id="stage">
+    <div id="bar">
+      <button data-act="rot-cw" title="顺时针旋转 90°（R）">↻ 旋转</button>
+      <button data-act="rot-ccw" title="逆时针旋转 90°（Shift+R）">↺ 反转</button>
+      <button data-act="del" title="删除选中（Delete）">🗑 删除</button>
+      <div class="sep"></div>
+      <span class="fsgroup" title="标签字号&#10;选中对象时 → 调整选中标签&#10;未选中时 → 调整新建对象的默认字号&#10;Shift 点击 → 应用到全部对象&#10;快捷键 [ 减小 / ] 增大，Ctrl+滚轮 亦可">
+        <button data-act="fs-down">A−</button>
+        <span id="fsVal">13</span>
+        <button data-act="fs-up">A+</button>
+      </span>
+      <div class="sep"></div>
+      <button data-act="undo" title="撤销（Ctrl+Z）">↶ 撤销</button>
+      <button data-act="redo" title="重做（Ctrl+Y）">↷ 重做</button>
+      <div class="sep"></div>
+      <button data-act="selall" title="全选（Ctrl+A）">全选</button>
+      <button data-act="clear" title="清空画布">清空</button>
+      <div class="sep"></div>
+      <button data-act="grid" class="on" title="显示/隐藏网格">网格</button>
+      <button data-act="fit" title="缩放适配内容">适配</button>
+      <div class="sep"></div>
+      <button data-act="png" title="导出 PNG 图片">导出 PNG</button>
+      <button data-act="save" title="保存为 .json">保存</button>
+      <button data-act="open" title="打开 .json">打开</button>
+    </div>
+    <div id="cvwrap">
+      <canvas id="cv"></canvas>
+      <input id="labelEditor" spellcheck="false" autocomplete="off" />
+      <div id="status"></div>
+      <div id="help">空格/中键平移 · 滚轮缩放 · 双击改标签 · [ ] 调字号 · 框图多选</div>
+      <div class="toast" id="toast"></div>
+    </div>
+  </main>
+</div>
+
+<script>
+(function(){
+'use strict';
+
+/* ============================================================
+ *  常量
+ * ============================================================ */
+const G = 20;                        // 网格间距（世界像素），所有吸附都基于它
+const INK = '#243447';
+const WIRE = '#b3261e';
+const SEL = '#2563eb';
+const GRIDC = '#e4e7ec';
+const GRIDC2 = '#d3d8e0';
+const PIN_COLOR = '#0f766e';
+
+/* 标签字号：范围、步长、全局默认值（每个对象可各自覆盖） */
+const FS_MIN = 8, FS_MAX = 48, FS_DEFAULT = 13, FS_STEP = 1;
+let defFS = FS_DEFAULT;
+function fsOf(it){ return Math.max(FS_MIN, Math.min(FS_MAX, it && it.fs || defFS)); }
+function clampFS(v){ return Math.max(FS_MIN, Math.min(FS_MAX, Math.round(v))); }
+
+const dpr = Math.max(1, window.devicePixelRatio || 1);
+
+/* ============================================================
+ *  DOM
+ * ============================================================ */
+const canvas = document.getElementById('cv');
+const ctx = canvas.getContext('2d');
+const cvwrap = document.getElementById('cvwrap');
+const labelEditor = document.getElementById('labelEditor');
+const statusEl = document.getElementById('status');
+const toastEl = document.getElementById('toast');
+const fsValEl = document.getElementById('fsVal');
+
+/* ============================================================
+ *  几何工具
+ * ============================================================ */
+function snap(v){ return Math.round(v / G) * G; }
+function snapPt(p){ return { x: snap(p.x), y: snap(p.y) }; }
+const ROT_IDX = { 0:0, 90:1, 180:2, 270:3 };
+function normRot(r){ return ((r % 360) + 360) % 360; }
+/** 绕原点顺时针旋转 rot 度（屏幕坐标，y 向下） */
+function rotPt(p, rot){
+  const k = ROT_IDX[normRot(rot)] || 0;
+  if (k === 0) return { x: p.x, y: p.y };
+  if (k === 1) return { x: -p.y, y: p.x };
+  if (k === 2) return { x: -p.x, y: -p.y };
+  return { x: p.y, y: -p.x };
+}
+function dist(a, b){ return Math.hypot(a.x - b.x, a.y - b.y); }
+function segDist(p, a, b){
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const l2 = dx * dx + dy * dy;
+  let t = l2 ? ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+}
+function samePt(a, b){ return Math.abs(a.x - b.x) < .01 && Math.abs(a.y - b.y) < .01; }
+
+/* ============================================================
+ *  绘图小工具（所有坐标都在“世界坐标”下，字号/线宽按缩放反向补偿）
+ * ============================================================ */
+let VS = 1;             // 当前绘制缩放（= view.z，导出/预览时会被临时改写）
+function setFont(c, size, weight){
+  c.font = (weight ? weight + ' ' : '') + (size / VS) + 'px ui-sans-serif,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif';
+}
+function L(c, x1, y1, x2, y2){ c.beginPath(); c.moveTo(x1, y1); c.lineTo(x2, y2); c.stroke(); }
+function CIR(c, x, y, r){ c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.stroke(); }
+function DOT(c, x, y, r){ c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill(); }
+function TXT(c, s, x, y, size, weight){
+  setFont(c, size, weight);
+  c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.fillText(s, x, y);
+}
+function ARROW(c, x, y, ang, size){
+  c.beginPath();
+  c.moveTo(x, y);
+  c.lineTo(x - size * Math.cos(ang - .42), y - size * Math.sin(ang - .42));
+  c.lineTo(x - size * Math.cos(ang + .42), y - size * Math.sin(ang + .42));
+  c.closePath(); c.fill();
+}
+
+/* ============================================================
+ *  元件库
+ *  pins: [x格, y格, dirX, dirY]  —— dir 是引脚“朝外”方向
+ *  box : [x0,y0,x1,y1] 局部包围盒（格）
+ *  draw(c) : 在已 translate 到元件中心的坐标系里绘制，单位为像素
+ * ============================================================ */
+const PARTS = {
+
+/* ---- 基础 ---- */
+resistor:{ name:'电阻', def:'R', box:[-1.7,-0.9,1.7,0.9],
+  pins:[[-2,0,-1,0],[2,0,1,0]],
+  draw(c){
+    L(c,-2*G,0,-1.5*G,0); L(c,1.5*G,0,2*G,0);
+    c.beginPath(); c.rect(-1.5*G,-0.6*G,3*G,1.2*G); c.stroke();
+  }},
+
+capacitor:{ name:'电容', def:'C', box:[-1.7,-1.2,1.7,1.2],
+  pins:[[-2,0,-1,0],[2,0,1,0]],
+  draw(c){
+    L(c,-2*G,0,-0.4*G,0); L(c,0.4*G,0,2*G,0);
+    L(c,-0.4*G,-1*G,-0.4*G,1*G); L(c,0.4*G,-1*G,0.4*G,1*G);
+  }},
+
+ecap:{ name:'电解电容', def:'C', box:[-1.7,-1.9,1.7,1.2],
+  pins:[[-2,0,-1,0],[2,0,1,0]],
+  draw(c){
+    L(c,-2*G,0,-0.4*G,0); L(c,0.95*G,0,2*G,0);
+    L(c,-0.4*G,-1*G,-0.4*G,1*G);
+    c.beginPath(); c.ellipse(0.6*G,0,0.35*G,1*G,0,-Math.PI/2,Math.PI/2); c.stroke();
+    L(c,-1.15*G,-1.5*G,-0.55*G,-1.5*G); L(c,-0.85*G,-1.8*G,-0.85*G,-1.2*G);
+  }},
+
+inductor:{ name:'电感', def:'L', box:[-1.7,-1,1.7,1],
+  pins:[[-2,0,-1,0],[2,0,1,0]],
+  draw(c){
+    for(let i=0;i<4;i++){ c.beginPath(); c.arc(-1.5*G+i*G,0,0.5*G,Math.PI,0,true); c.stroke(); }
+  }},
+
+battery:{ name:'电池', def:'BT', box:[-1.7,-1.2,1.7,1.2],
+  pins:[[-2,0,-1,0],[2,0,1,0]],
+  draw(c){
+    L(c,-2*G,0,-0.4*G,0); L(c,0.4*G,0,2*G,0);
+    L(c,-0.4*G,-1*G,-0.4*G,1*G);
+    L(c,0.4*G,-0.5*G,0.4*G,0.5*G);
+  }},
+
+dcsrc:{ name:'直流源', def:'V', box:[-1.7,-1.3,1.7,1.3],
+  pins:[[-2,0,-1,0],[2,0,1,0]],
+  draw(c){
+    L(c,-2*G,0,-1*G,0); L(c,1*G,0,2*G,0);
+    CIR(c,0,0,1*G);
+    L(c,-0.78*G,-0.3*G,-0.28*G,-0.3*G); L(c,-0.53*G,-0.55*G,-0.53*G,-0.05*G);
+    L(c,0.28*G,0.3*G,0.78*G,0.3*G);
+  }},
+
+acsrc:{ name:'交流源', def:'V', box:[-1.7,-1.3,1.7,1.3],
+  pins:[[-2,0,-1,0],[2,0,1,0]],
+  draw(c){
+    L(c,-2*G,0,-1*G,0); L(c,1*G,0,2*G,0);
+    CIR(c,0,0,1*G);
+    c.beginPath();
+    c.moveTo(-0.62*G,0);
+    c.bezierCurveTo(-0.42*G,-0.62*G,-0.2*G,-0.62*G,0,0);
+    c.bezierCurveTo(0.2*G,0.62*G,0.42*G,0.62*G,0.62*G,0);
+    c.stroke();
+  }},
+
+gnd:{ name:'接地', def:'GND', box:[-1.2,-2.2,1.2,1.2],
+  pins:[[0,-2,0,-1]],
+  draw(c){
+    L(c,0,-2*G,0,0);
+    L(c,-1*G,0,1*G,0); L(c,-0.6*G,0.5*G,0.6*G,0.5*G); L(c,-0.25*G,1*G,0.25*G,1*G);
+  }},
+
+sw:{ name:'开关', def:'S', box:[-1.7,-1.4,1.7,0.6],
+  pins:[[-2,0,-1,0],[2,0,1,0]],
+  draw(c){
+    L(c,-2*G,0,-1.2*G,0); L(c,1.2*G,0,2*G,0);
+    DOT(c,-1.2*G,0,0.14*G); DOT(c,1.2*G,0,0.14*G);
+    L(c,-1.2*G,0,0.85*G,-1.15*G);
+  }},
+
+button:{ name:'按钮', def:'SB', box:[-1.7,-1.7,1.7,0.6],
+  pins:[[-2,0,-1,0],[2,0,1,0]],
+  draw(c){
+    L(c,-2*G,0,-1.2*G,0); L(c,1.2*G,0,2*G,0);
+    DOT(c,-1.2*G,0,0.14*G); DOT(c,1.2*G,0,0.14*G);
+    L(c,-1.2*G,0,1.0*G,-0.9*G);
+    L(c,-1.3*G,-1.35*G,1.3*G,-1.35*G);
+    L(c,0,-1.35*G,0,-1.95*G);
+  }},
+
+lamp:{ name:'灯泡', def:'H', box:[-1.7,-1.7,1.7,1.7],
+  pins:[[-2,0,-1,0],[2,0,1,0]],
+  draw(c){
+    L(c,-2*G,0,-1*G,0); L(c,1*G,0,2*G,0);
+    CIR(c,0,0,1*G);
+    L(c,-0.7*G,-0.7*G,0.7*G,0.7*G); L(c,0.7*G,-0.7*G,-0.7*G,0.7*G);
+  }},
+
+fuse:{ name:'保险丝', def:'F', box:[-1.7,-0.7,1.7,0.7],
+  pins:[[-2,0,-1,0],[2,0,1,0]],
+  draw(c){
+    L(c,-2*G,0,-1.5*G,0); L(c,1.5*G,0,2*G,0);
+    c.beginPath(); c.rect(-1.5*G,-0.5*G,3*G,1*G); c.stroke();
+    L(c,-1.5*G,0,1.5*G,0);
+  }},
+
+/* ---- 半导体 ---- */
+diode:{ name:'二极管', def:'D', box:[-1.7,-1,1.7,1],
+  pins:[[-2,0,-1,0],[2,0,1,0]],
+  draw(c){
+    L(c,-2*G,0,-0.6*G,0); L(c,0.6*G,0,2*G,0);
+    c.beginPath(); c.moveTo(-0.6*G,-0.78*G); c.lineTo(-0.6*G,0.78*G); c.lineTo(0.6*G,0); c.closePath(); c.stroke();
+    L(c,0.6*G,-0.78*G,0.6*G,0.78*G);
+  }},
+
+led:{ name:'发光二极管', def:'LED', box:[-1.7,-2.1,1.7,1],
+  pins:[[-2,0,-1,0],[2,0,1,0]],
+  draw(c){
+    L(c,-2*G,0,-0.6*G,0); L(c,0.6*G,0,2*G,0);
+    c.beginPath(); c.moveTo(-0.6*G,-0.78*G); c.lineTo(-0.6*G,0.78*G); c.lineTo(0.6*G,0); c.closePath(); c.stroke();
+    L(c,0.6*G,-0.78*G,0.6*G,0.78*G);
+    L(c,0.1*G,-0.95*G,0.7*G,-1.6*G); ARROW(c,0.7*G,-1.6*G,-Math.PI*2.8/4,4.5);
+    L(c,0.55*G,-0.8*G,1.15*G,-1.45*G); ARROW(c,1.15*G,-1.45*G,-Math.PI*2.8/4,4.5);
+  }},
+
+zener:{ name:'稳压管', def:'DZ', box:[-1.7,-1,1.7,1],
+  pins:[[-2,0,-1,0],[2,0,1,0]],
+  draw(c){
+    L(c,-2*G,0,-0.6*G,0); L(c,0.6*G,0,2*G,0);
+    c.beginPath(); c.moveTo(-0.6*G,-0.78*G); c.lineTo(-0.6*G,0.78*G); c.lineTo(0.6*G,0); c.closePath(); c.stroke();
+    c.beginPath(); c.moveTo(0.3*G,-0.78*G); c.lineTo(0.6*G,-0.78*G); c.lineTo(0.6*G,0.78*G); c.lineTo(0.9*G,0.78*G); c.stroke();
+  }},
+
+npn:{ name:'NPN 三极管', def:'Q', box:[-2,-2.1,2,2.1],
+  pins:[[-2,0,-1,0],[1,-2,0,-1],[1,2,0,1]],
+  draw(c){
+    CIR(c,0,0,1.75*G);
+    L(c,-2*G,0,-0.7*G,0);
+    L(c,-0.7*G,-1.15*G,-0.7*G,1.15*G);
+    L(c,1*G,-2*G,1*G,-1.15*G);
+    L(c,1*G,-1.15*G,-0.7*G,-0.45*G);
+    L(c,1*G,2*G,1*G,1.15*G);
+    L(c,1*G,1.15*G,-0.7*G,0.45*G);
+    const ang = Math.atan2(1.15*G - 0.45*G, 1*G + 0.7*G);
+    ARROW(c,0.86*G,1.05*G,ang,8);
+  }},
+
+pnp:{ name:'PNP 三极管', def:'Q', box:[-2,-2.1,2,2.1],
+  pins:[[-2,0,-1,0],[1,-2,0,-1],[1,2,0,1]],
+  draw(c){
+    CIR(c,0,0,1.75*G);
+    L(c,-2*G,0,-0.7*G,0);
+    L(c,-0.7*G,-1.15*G,-0.7*G,1.15*G);
+    L(c,1*G,-2*G,1*G,-1.15*G);
+    L(c,1*G,-1.15*G,-0.7*G,-0.45*G);
+    L(c,1*G,2*G,1*G,1.15*G);
+    L(c,1*G,1.15*G,-0.7*G,0.45*G);
+    const ang = Math.atan2(0.45*G - 1.15*G, -0.7*G - 1*G);
+    ARROW(c,-0.44*G,0.56*G,ang,8);
+  }},
+
+opamp:{ name:'运放', def:'U', box:[-2,-2.1,3.1,2.1],
+  pins:[[-2,-1,-1,0],[-2,1,-1,0],[3,0,1,0]],
+  draw(c){
+    c.beginPath(); c.moveTo(-1.5*G,-2*G); c.lineTo(-1.5*G,2*G); c.lineTo(2.5*G,0); c.closePath(); c.stroke();
+    L(c,-2*G,-1*G,-1.5*G,-1*G); L(c,-2*G,1*G,-1.5*G,1*G); L(c,2.5*G,0,3*G,0);
+    TXT(c,'+',-1.18*G,-1*G,13);
+    TXT(c,'–',-1.18*G,1*G,13);
+  }},
+
+/* ---- 其他 ---- */
+transformer:{ name:'变压器', def:'T', box:[-2,-1.4,2,1.4],
+  pins:[[-2,-1,-1,0],[-2,1,-1,0],[2,-1,1,0],[2,1,1,0]],
+  draw(c){
+    L(c,-2*G,-1*G,-1.4*G,-1*G); L(c,-2*G,1*G,-1.4*G,1*G);
+    L(c,2*G,-1*G,1.4*G,-1*G);  L(c,2*G,1*G,1.4*G,1*G);
+    for(const cy of [-0.5*G,0.5*G]){
+      c.beginPath(); c.arc(-0.9*G,cy,0.5*G,0.5*Math.PI,1.5*Math.PI,false); c.stroke();
+      c.beginPath(); c.arc(0.9*G,cy,0.5*G,1.5*Math.PI,0.5*Math.PI,false); c.stroke();
+    }
+    L(c,-0.14*G,-1.15*G,-0.14*G,1.15*G); L(c,0.14*G,-1.15*G,0.14*G,1.15*G);
+  }},
+
+xtal:{ name:'晶振', def:'X', box:[-1.7,-1.3,1.7,1.3],
+  pins:[[-2,0,-1,0],[2,0,1,0]],
+  draw(c){
+    L(c,-2*G,0,-0.9*G,0); L(c,0.9*G,0,2*G,0);
+    L(c,-0.9*G,-1.1*G,-0.9*G,1.1*G); L(c,0.9*G,-1.1*G,0.9*G,1.1*G);
+    c.beginPath(); c.rect(-0.4*G,-0.8*G,0.8*G,1.6*G); c.stroke();
+  }},
+
+motor:{ name:'电机', def:'M', box:[-1.7,-1.7,1.7,1.7],
+  pins:[[-2,0,-1,0],[2,0,1,0]],
+  draw(c){
+    L(c,-2*G,0,-1*G,0); L(c,1*G,0,2*G,0);
+    CIR(c,0,0,1*G);
+    TXT(c,'M',0,0,16,'700');
+  }},
+
+spk:{ name:'扬声器', def:'LS', box:[-1.7,-1.8,1.7,1.8],
+  pins:[[-2,0,-1,0],[2,0,1,0]],
+  draw(c){
+    L(c,-2*G,0,-0.5*G,0);
+    c.beginPath(); c.rect(-0.5*G,-0.55*G,0.7*G,1.1*G); c.stroke();
+    c.beginPath();
+    c.moveTo(0.2*G,-1.15*G); c.lineTo(1.3*G,-1.75*G);
+    c.lineTo(1.3*G,1.75*G);  c.lineTo(0.2*G,1.15*G); c.closePath(); c.stroke();
+    L(c,1.3*G,0,2*G,0);
+  }},
+
+ammeter:{ name:'电流表', def:'A', box:[-1.7,-1.7,1.7,1.7],
+  pins:[[-2,0,-1,0],[2,0,1,0]],
+  draw(c){
+    L(c,-2*G,0,-1*G,0); L(c,1*G,0,2*G,0);
+    CIR(c,0,0,1*G);
+    TXT(c,'A',0,0,16,'700');
+  }},
+
+voltmeter:{ name:'电压表', def:'V', box:[-1.7,-1.7,1.7,1.7],
+  pins:[[-2,0,-1,0],[2,0,1,0]],
+  draw(c){
+    L(c,-2*G,0,-1*G,0); L(c,1*G,0,2*G,0);
+    CIR(c,0,0,1*G);
+    TXT(c,'V',0,0,16,'700');
+  }},
+};
+
+/* ---- 独立导线端点（端子）对象 ---- */
+const PORT_DEF = {
+  name:'导线端点', def:'P', box:[-2.0,-0.55,0.55,0.55],
+  pins:[[0,0,1,0]],
+  draw(c){
+    DOT(c,0,0,0.16*G);
+    L(c,0,0,-1.5*G,0);
+    CIR(c,-1.62*G,0,0.3*G);
+  }
+};
+
+const GROUPS = [
+  { name:'基础元件', items:['resistor','capacitor','ecap','inductor','battery','dcsrc','acsrc','gnd','sw','button','lamp','fuse'] },
+  { name:'半导体',   items:['diode','led','zener','npn','pnp','opamp'] },
+  { name:'其他',     items:['transformer','xtal','motor','spk','ammeter','voltmeter'] },
+  { name:'连接',     items:['port'] },
+];
+
+/* ============================================================
+ *  状态
+ * ============================================================ */
+const state = {
+  items: [],
+  sel: new Set(),
+  view: { x: 120, y: 90, z: 1 },
+  nextId: 1,
+  counters: {},
+};
+const view = state.view;
+let showGrid = true;
+
+const undoStack = [];
+const redoStack = [];
+let pendingSnap = null;
+
+function uid(pfx){ return pfx + (state.nextId++); }
+function getItem(id){ for(const it of state.items) if(it.id === id) return it; return null; }
+function defOf(it){ return it.kind === 'port' ? PORT_DEF : PARTS[it.type]; }
+function partItems(){ return state.items.filter(i => i.kind !== 'wire'); }
+function wireItems(){ return state.items.filter(i => i.kind === 'wire'); }
+function selectedItems(){ return state.items.filter(i => state.sel.has(i.id)); }
+
+/* ============================================================
+ *  快照 / 撤销
+ * ============================================================ */
+function snapshot(){
+  return JSON.stringify({ items: state.items, nextId: state.nextId, counters: state.counters });
+}
+function restore(s){
+  const o = JSON.parse(s);
+  state.items = o.items;
+  state.nextId = o.nextId;
+  state.counters = o.counters || {};
+  state.sel.clear();
+}
+function touchHistory(){ if(pendingSnap === null) pendingSnap = snapshot(); }
+function commitHistory(){
+  if(pendingSnap === null) return;
+  undoStack.push(pendingSnap);
+  if(undoStack.length > 120) undoStack.shift();
+  redoStack.length = 0;
+  pendingSnap = null;
+  updateButtons();
+}
+function discardHistory(){ pendingSnap = null; }
+function undo(){
+  if(!undoStack.length) return;
+  redoStack.push(snapshot());
+  restore(undoStack.pop());
+  render(); updateButtons();
+}
+function redo(){
+  if(!redoStack.length) return;
+  undoStack.push(snapshot());
+  restore(redoStack.pop());
+  render(); updateButtons();
+}
+
+/* ============================================================
+ *  引脚 / 端点解析
+ * ============================================================ */
+/** 返回元件所有引脚的绝对坐标与方向 */
+function pinsOf(it){
+  const def = defOf(it);
+  const out = [];
+  for(let i=0;i<def.pins.length;i++){
+    const p = def.pins[i];
+    const o = rotPt({ x: p[0]*G, y: p[1]*G }, it.rot);
+    const d = rotPt({ x: p[2], y: p[3] }, it.rot);
+    out.push({ x: it.x + o.x, y: it.y + o.y, d, idx: i });
+  }
+  return out;
+}
+/** 解析导线端点引用 {item, pin} */
+function resolveEnd(ref){
+  const it = getItem(ref.item);
+  if(!it) return null;
+  const ps = pinsOf(it);
+  const p = ps[ref.pin];
+  if(!p) return null;
+  return { pos: { x: p.x, y: p.y }, dir: p.d, item: it };
+}
+
+/* ============================================================
+ *  导线布线路由
+ *  规则：从端点出发沿其自身方向延伸，直到与另一端点的方向线相交；
+ *        平行或反向时改走中轴折线；万不得已时绕行外框。
+ * ============================================================ */
+function routePoints(A, dA, B, dB){
+  const eps = 0.5;
+  const out = [A];
+  const push = p => {
+    const l = out[out.length-1];
+    if(Math.abs(l.x - p.x) > .01 || Math.abs(l.y - p.y) > .01) out.push(p);
+  };
+  const horiz = d => d.x !== 0;
+
+  // 1) A 水平、B 垂直 —— 交点 (B.x, A.y)
+  if(horiz(dA) && !horiz(dB)){
+    const t = (B.x - A.x) * dA.x;
+    const s = (A.y - B.y) * dB.y;
+    if(t > eps && s > eps){ push({ x: B.x, y: A.y }); push(B); return out; }
+  }
+  // 2) A 垂直、B 水平 —— 交点 (A.x, B.y)
+  if(!horiz(dA) && horiz(dB)){
+    const t = (B.y - A.y) * dA.y;
+    const s = (A.x - B.x) * dB.x;
+    if(t > eps && s > eps){ push({ x: A.x, y: B.y }); push(B); return out; }
+  }
+  // 3) 双双水平：走中间竖轴（必须严格位于两端引脚的方向侧，否则绕行）
+  if(horiz(dA) && horiz(dB)){
+    const mid = (A.x + B.x) / 2;
+    if((mid - A.x) * dA.x > eps && (mid - B.x) * dB.x > eps){
+      push({ x: mid, y: A.y }); push({ x: mid, y: B.y }); push(B); return out;
+    }
+  }
+  // 4) 双双垂直：走中间横轴
+  if(!horiz(dA) && !horiz(dB)){
+    const mid = (A.y + B.y) / 2;
+    if((mid - A.y) * dA.y > eps && (mid - B.y) * dB.y > eps){
+      push({ x: A.x, y: mid }); push({ x: B.x, y: mid }); push(B); return out;
+    }
+  }
+  // 5) 兜底：各沿自身方向外扩后绕行
+  const off = 3 * G;
+  const a = { x: A.x + dA.x * off, y: A.y + dA.y * off };
+  const b = { x: B.x + dB.x * off, y: B.y + dB.y * off };
+  push(a);
+  if(horiz(dA)) push({ x: a.x, y: b.y }); else push({ x: b.x, y: a.y });
+  push(b);
+  push(B);
+  return out;
+}
+
+function wirePath(w){
+  const A = resolveEnd(w.a), B = resolveEnd(w.b);
+  if(!A || !B) return null;
+  return routePoints(A.pos, A.dir, B.pos, B.dir);
+}
+function pathMid(path){
+  let total = 0;
+  for(let i=0;i<path.length-1;i++) total += dist(path[i], path[i+1]);
+  let acc = 0;
+  for(let i=0;i<path.length-1;i++){
+    const l = dist(path[i], path[i+1]);
+    if(acc + l >= total/2){
+      const t = l ? (total/2 - acc)/l : 0;
+      return { x: path[i].x + (path[i+1].x - path[i].x)*t, y: path[i].y + (path[i+1].y - path[i].y)*t };
+    }
+    acc += l;
+  }
+  return path[0];
+}
+
+/* ============================================================
+ *  包围盒 / 命中测试
+ * ============================================================ */
+function worldBox(it){
+  const def = defOf(it);
+  const b = def.box;
+  const pts = [[b[0],b[1]],[b[2],b[1]],[b[2],b[3]],[b[0],b[3]]]
+    .map(([x,y]) => rotPt({ x: x*G, y: y*G }, it.rot));
+  const xs = pts.map(p => it.x + p.x), ys = pts.map(p => it.y + p.y);
+  return { x0: Math.min.apply(null,xs), y0: Math.min.apply(null,ys),
+           x1: Math.max.apply(null,xs), y1: Math.max.apply(null,ys) };
+}
+function hitBox(it){
+  const b = worldBox(it), m = 2 / view.z;
+  return { x0: b.x0-m, y0: b.y0-m, x1: b.x1+m, y1: b.y1+m };
+}
+function inBox(p, b){ return p.x >= b.x0 && p.x <= b.x1 && p.y >= b.y0 && p.y <= b.y1; }
+
+function pickPin(p, exclude){
+  const r = 9 / view.z;
+  for(let i = state.items.length - 1; i >= 0; i--){
+    const it = state.items[i];
+    if(it.kind === 'wire') continue;
+    if(exclude && exclude.item === it.id) continue;
+    const ps = pinsOf(it);
+    for(let k=0;k<ps.length;k++){
+      if(dist(p, ps[k]) <= r) return { item: it, idx: k, pos: { x: ps[k].x, y: ps[k].y }, dir: ps[k].d };
+    }
+  }
+  return null;
+}
+function wireHit(w, p){
+  const path = wirePath(w);
+  if(!path) return false;
+  const tol = 7 / view.z;
+  for(let i=0;i<path.length-1;i++) if(segDist(p, path[i], path[i+1]) <= tol) return true;
+  return false;
+}
+function pick(p){
+  const pin = pickPin(p, null);
+  if(pin) return { kind:'pin', item: pin.item, idx: pin.idx, pos: pin.pos, dir: pin.dir };
+  for(let i = state.items.length - 1; i >= 0; i--){
+    const it = state.items[i];
+    if(it.kind === 'wire'){ if(wireHit(it, p)) return { kind:'item', item: it }; }
+    else if(inBox(p, hitBox(it))) return { kind:'item', item: it };
+  }
+  return null;
+}
+function marqueeHits(rect){
+  const hits = [];
+  for(const it of state.items){
+    if(it.kind === 'wire'){
+      const path = wirePath(it);
+      if(path && path.every(q => inBox(q, rect))) hits.push(it);
+    } else {
+      const b = hitBox(it);
+      if(inBox({ x:b.x0, y:b.y0 }, rect) && inBox({ x:b.x1, y:b.y1 }, rect)) hits.push(it);
+    }
+  }
+  return hits;
+}
+
+/* ============================================================
+ *  创建对象
+ * ============================================================ */
+function newItem(type, x, y){
+  if(type === 'port'){
+    const n = (state.counters.P = (state.counters.P || 0) + 1);
+    return { kind:'port', id: uid('p'), x: snap(x), y: snap(y), rot: 0, label: 'P' + n, fs: defFS };
+  }
+  const d = PARTS[type];
+  const n = (state.counters[type] = (state.counters[type] || 0) + 1);
+  return { kind:'part', id: uid('e'), type: type, x: snap(x), y: snap(y), rot: 0, label: d.def + n, fs: defFS };
+}
+function addWire(aRef, bRef){
+  if(aRef.item === bRef.item && aRef.pin === bRef.pin) return null;
+  const dup = state.items.some(i => i.kind === 'wire' && (
+    (i.a.item === aRef.item && i.a.pin === aRef.pin && i.b.item === bRef.item && i.b.pin === bRef.pin) ||
+    (i.a.item === bRef.item && i.a.pin === bRef.pin && i.b.item === aRef.item && i.b.pin === aRef.pin)));
+  if(dup) return null;
+  const w = { kind:'wire', id: uid('w'), a: aRef, b: bRef, label: '', fs: defFS };
+  state.items.push(w);
+  return w;
+}
+
+/* ============================================================
+ *  渲染
+ * ============================================================ */
+let cssW = 1, cssH = 1;
+function render(){
+  VS = view.z;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = '#fbfcfd';
+  ctx.fillRect(0, 0, cssW, cssH);
+
+  ctx.setTransform(dpr*view.z, 0, 0, dpr*view.z, dpr*view.x, dpr*view.y);
+
+  drawGrid();
+
+  // 导线
+  for(const w of wireItems()){
+    const path = wirePath(w);
+    if(!path) continue;
+    const hot = state.sel.has(w.id);
+    ctx.strokeStyle = hot ? SEL : WIRE;
+    ctx.lineWidth = (hot ? 3.2 : 2.2) / view.z;
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(path[0].x, path[0].y);
+    for(let i=1;i<path.length;i++) ctx.lineTo(path[i].x, path[i].y);
+    ctx.stroke();
+
+    // 端点小圆
+    ctx.fillStyle = hot ? SEL : WIRE;
+    DOT(ctx, path[0].x, path[0].y, 2.4/view.z);
+    DOT(ctx, path[path.length-1].x, path[path.length-1].y, 2.4/view.z);
+
+    drawWireLabel(w, path);
+  }
+
+  drawJunctions();
+
+  // 元件 / 端子
+  for(const it of partItems()){
+    const def = defOf(it);
+    ctx.save();
+    ctx.translate(it.x, it.y);
+    ctx.rotate(normRot(it.rot) * Math.PI / 180);
+    ctx.strokeStyle = INK; ctx.fillStyle = INK;
+    ctx.lineWidth = 2 / view.z; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    def.draw(ctx, it);
+    ctx.restore();
+
+    // 引脚触点
+    ctx.fillStyle = PIN_COLOR;
+    for(const p of pinsOf(it)) DOT(ctx, p.x, p.y, 2.2 / view.z);
+
+    // 标签（始终水平，字号可单独调整）
+    const b = worldBox(it);
+    if(it.label){
+      const fs = fsOf(it);
+      ctx.fillStyle = INK;
+      setFont(ctx, fs);
+      ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+      ctx.fillText(it.label, it.x, b.y0 - (4 + fs * 0.35) / view.z);
+    }
+    // 选中态
+    if(state.sel.has(it.id)){
+      ctx.strokeStyle = SEL; ctx.lineWidth = 1.4 / view.z;
+      ctx.setLineDash([5/view.z, 4/view.z]);
+      ctx.strokeRect(b.x0 - 3/view.z, b.y0 - 3/view.z,
+                     (b.x1-b.x0) + 6/view.z, (b.y1-b.y0) + 6/view.z);
+      ctx.setLineDash([]);
+    }
+  }
+
+  // 预览导线
+  if(drag && drag.mode === 'wire' && drag.preview){
+    const path = drag.preview;
+    ctx.strokeStyle = SEL; ctx.lineWidth = 2 / view.z;
+    ctx.setLineDash([6/view.z, 4/view.z]);
+    ctx.beginPath(); ctx.moveTo(path[0].x, path[0].y);
+    for(let i=1;i<path.length;i++) ctx.lineTo(path[i].x, path[i].y);
+    ctx.stroke(); ctx.setLineDash([]);
+    if(drag.targetPin){
+      ctx.fillStyle = SEL;
+      DOT(ctx, drag.targetPin.pos.x, drag.targetPin.pos.y, 5/view.z);
+    }
+  }
+
+  // 框选矩形
+  if(drag && drag.mode === 'marquee' && drag.cur){
+    const a = drag.start, b = drag.cur;
+    ctx.fillStyle = 'rgba(37,99,235,.10)';
+    ctx.strokeStyle = SEL; ctx.lineWidth = 1 / view.z;
+    ctx.setLineDash([5/view.z, 4/view.z]);
+    const x = Math.min(a.x,b.x), y = Math.min(a.y,b.y);
+    const w2 = Math.abs(b.x-a.x), h2 = Math.abs(b.y-a.y);
+    ctx.fillRect(x, y, w2, h2);
+    ctx.strokeRect(x, y, w2, h2);
+    ctx.setLineDash([]);
+  }
+
+  // 悬停引脚高亮
+  if(hoverPin){
+    ctx.strokeStyle = SEL; ctx.lineWidth = 2 / view.z;
+    CIR(ctx, hoverPin.pos.x, hoverPin.pos.y, 7 / view.z);
+  }
+
+  updateStatus();
+}
+
+function drawGrid(){
+  if(!showGrid) return;
+  const z = view.z;
+  const x0 = -view.x / z, x1 = (cssW - view.x) / z;
+  const y0 = -view.y / z, y1 = (cssH - view.y) / z;
+  let step = G;
+  while(step * z < 9) step *= 2;
+
+  ctx.lineWidth = 1 / z;
+  ctx.strokeStyle = GRIDC;
+  ctx.beginPath();
+  for(let x = Math.floor(x0/step)*step; x < x1; x += step){ ctx.moveTo(x, y0); ctx.lineTo(x, y1); }
+  for(let y = Math.floor(y0/step)*step; y < y1; y += step){ ctx.moveTo(x0, y); ctx.lineTo(x1, y); }
+  ctx.stroke();
+
+  if(step === G){
+    ctx.strokeStyle = GRIDC2;
+    ctx.lineWidth = 1.3 / z;
+    const big = G * 5;
+    ctx.beginPath();
+    for(let x = Math.floor(x0/big)*big; x < x1; x += big){ ctx.moveTo(x, y0); ctx.lineTo(x, y1); }
+    for(let y = Math.floor(y0/big)*big; y < y1; y += big){ ctx.moveTo(x0, y); ctx.lineTo(x1, y); }
+    ctx.stroke();
+  }
+}
+
+function drawWireLabel(w, path){
+  if(!w.label) return;
+  const m = pathMid(path);
+  const fs = fsOf(w);
+  setFont(ctx, fs);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const tw = ctx.measureText(w.label).width;
+  const padx = (fs * 0.32) / view.z, pady = (fs * 0.72) / view.z;
+  ctx.fillStyle = 'rgba(255,255,255,.92)';
+  ctx.fillRect(m.x - tw/2 - padx, m.y - pady, tw + padx*2, pady*2);
+  ctx.fillStyle = state.sel.has(w.id) ? SEL : WIRE;
+  ctx.fillText(w.label, m.x, m.y);
+}
+
+/** T 型接头 + 多线共用引脚 → 实心节点 */
+function drawJunctions(){
+  const segs = [];
+  for(const w of wireItems()){
+    const path = wirePath(w);
+    if(!path) continue;
+    for(let i=0;i<path.length-1;i++) segs.push({ a: path[i], b: path[i+1], wire: w });
+  }
+  const hz = s => Math.abs(s.a.y - s.b.y) < .01;
+  const vt = s => Math.abs(s.a.x - s.b.x) < .01;
+  const eps = 0.6;
+  const pts = [];
+  for(let i=0;i<segs.length;i++){
+    for(let j=i+1;j<segs.length;j++){
+      const s1 = segs[i], s2 = segs[j];
+      if(s1.wire === s2.wire) continue;
+      let h = null, v = null;
+      if(hz(s1) && vt(s2)){ h = s1; v = s2; }
+      else if(vt(s1) && hz(s2)){ h = s2; v = s1; }
+      if(!h || !v) continue;
+      const x = v.a.x, y = h.a.y;
+      const hy0 = Math.min(h.a.x,h.b.x), hy1 = Math.max(h.a.x,h.b.x);
+      const vy0 = Math.min(v.a.y,v.b.y), vy1 = Math.max(v.a.y,v.b.y);
+      if(x < hy0 - eps || x > hy1 + eps || y < vy0 - eps || y > vy1 + eps) continue;
+      const onHend = (Math.abs(x - h.a.x) < eps || Math.abs(x - h.b.x) < eps);
+      const onVend = (Math.abs(y - v.a.y) < eps || Math.abs(y - v.b.y) < eps);
+      if(onHend && onVend) continue;     // 拐角，不画
+      pts.push({ x, y });                // T 型，画
+    }
+  }
+  ctx.fillStyle = WIRE;
+  for(const p of pts) DOT(ctx, p.x, p.y, 3.4 / view.z);
+
+  // 同一引脚被 3 根以上导线共享时的连接点
+  const count = {};
+  for(const w of wireItems()){
+    for(const ref of [w.a, w.b]){
+      const k = ref.item + ':' + ref.pin;
+      count[k] = (count[k] || 0) + 1;
+    }
+  }
+  for(const k in count){
+    if(count[k] < 2) continue;
+    const [id, idx] = k.split(':');
+    const it = getItem(id);
+    if(!it) continue;
+    const p = pinsOf(it)[+idx];
+    if(!p) continue;
+    ctx.fillStyle = WIRE;
+    DOT(ctx, p.x, p.y, 3.4 / view.z);
+  }
+}
+
+function updateStatus(){
+  const p = mouseWorld;
+  const z = Math.round(view.z*100);
+  statusEl.textContent =
+    (p ? 'x:' + Math.round(p.x) + '  y:' + Math.round(p.y) + '   ' : '') +
+    '缩放 ' + z + '%   选中 ' + state.sel.size + '/' + state.items.length;
+  updateFsVal();
+}
+
+/* ============================================================
+ *  视图尺寸
+ * ============================================================ */
+function resize(){
+  const r = cvwrap.getBoundingClientRect();
+  cssW = Math.max(1, Math.round(r.width));
+  cssH = Math.max(1, Math.round(r.height));
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  canvas.style.width = cssW + 'px';
+  canvas.style.height = cssH + 'px';
+  render();
+}
+window.addEventListener('resize', resize);
+
+function toWorld(e){
+  const r = canvas.getBoundingClientRect();
+  return { x: (e.clientX - r.left - view.x) / view.z,
+           y: (e.clientY - r.top - view.y) / view.z };
+}
+
+/* ============================================================
+ *  交互
+ * ============================================================ */
+let drag = null;
+let hoverPin = null;
+let mouseWorld = null;
+let spaceDown = false;
+let editing = null;
+
+canvas.addEventListener('pointerdown', e => {
+  if(e.button === 2) return;
+  const p = toWorld(e);
+
+  if(e.button === 1 || spaceDown){
+    drag = { mode:'pan', sx: e.clientX, sy: e.clientY, ox: view.x, oy: view.y };
+    canvas.style.cursor = 'grabbing';
+    e.preventDefault();
+    return;
+  }
+
+  const hit = pick(p);
+
+  if(hit && hit.kind === 'pin'){
+    drag = { mode:'wire', from: { item: hit.item.id, pin: hit.idx },
+             pos: hit.pos, dir: hit.dir, preview: [hit.pos], targetPin: null, cur: p };
+    canvas.style.cursor = 'crosshair';
+    return;
+  }
+
+  if(hit && hit.kind === 'item'){
+    const it = hit.item;
+    if(e.shiftKey){
+      if(state.sel.has(it.id)) state.sel.delete(it.id);
+      else state.sel.add(it.id);
+      render();
+    } else if(!state.sel.has(it.id)){
+      state.sel.clear(); state.sel.add(it.id);
+      render();
+    }
+    const orig = new Map();
+    for(const s of selectedItems()) if(s.kind !== 'wire') orig.set(s.id, { x:s.x, y:s.y });
+    drag = { mode:'move', start:p, orig, changed:false, hitId:it.id, shift:e.shiftKey };
+    canvas.style.cursor = 'move';
+    return;
+  }
+
+  // 空白
+  if(!e.shiftKey && state.sel.size){ state.sel.clear(); render(); }
+  drag = { mode:'marquee', start:p, cur:p, add: e.shiftKey, base: new Set(state.sel) };
+});
+
+canvas.addEventListener('pointermove', e => {
+  const p = toWorld(e);
+  mouseWorld = p;
+
+  if(!drag){
+    const hp = pickPin(p, null);
+    const key = h => h ? (h.item.id + ':' + h.idx) : '';
+    const changed = key(hp) !== key(hoverPin);
+    hoverPin = hp;
+    const hit = hp ? null : pick(p);
+    canvas.style.cursor = hp ? 'crosshair' : (hit ? 'move' : 'crosshair');
+    if(changed) render(); else updateStatus();
+    return;
+  }
+
+  if(drag.mode === 'pan'){
+    view.x = drag.ox + (e.clientX - drag.sx);
+    view.y = drag.oy + (e.clientY - drag.sy);
+    render();
+    return;
+  }
+
+  if(drag.mode === 'move'){
+    const dx = Math.round((p.x - drag.start.x) / G) * G;
+    const dy = Math.round((p.y - drag.start.y) / G) * G;
+    // 先算出目标位置；确有变化时，必须「先拍快照、再落位」，否则撤销回不到原位
+    const plan = [];
+    for(const it of state.items){
+      if(it.kind === 'wire' || !state.sel.has(it.id)) continue;
+      const o = drag.orig.get(it.id);
+      if(!o) continue;
+      const nx = o.x + dx, ny = o.y + dy;
+      if(nx !== it.x || ny !== it.y) plan.push({ it: it, nx: nx, ny: ny });
+    }
+    if(plan.length){
+      if(!drag.changed){ touchHistory(); drag.changed = true; }
+      for(const s of plan){ s.it.x = s.nx; s.it.y = s.ny; }
+      render();
+    }
+    return;
+  }
+
+  if(drag.mode === 'marquee'){
+    drag.cur = p;
+    const rect = {
+      x0: Math.min(drag.start.x, p.x), y0: Math.min(drag.start.y, p.y),
+      x1: Math.max(drag.start.x, p.x), y1: Math.max(drag.start.y, p.y),
+    };
+    state.sel = new Set(drag.base);
+    for(const it of marqueeHits(rect)) state.sel.add(it.id);
+    render();
+    return;
+  }
+
+  if(drag.mode === 'wire'){
+    const tp = pickPin(p, drag.from);
+    let target, preview;
+    if(tp){
+      drag.targetPin = tp;
+      preview = routePoints(drag.pos, drag.dir, tp.pos, tp.dir);
+    } else {
+      drag.targetPin = null;
+      const t = snapPt(p);
+      const dx = drag.pos.x - t.x, dy = drag.pos.y - t.y;
+      const d = Math.abs(dx) >= Math.abs(dy)
+        ? { x: Math.sign(dx) || 1, y: 0 }
+        : { x: 0, y: Math.sign(dy) || 1 };
+      preview = routePoints(drag.pos, drag.dir, t, d);
+    }
+    drag.preview = preview;
+    drag.cur = p;
+    render();
+    return;
+  }
+});
+
+window.addEventListener('pointerup', e => {
+  if(!drag) return;
+  const p = toWorld(e);
+  const d = drag;
+  drag = null;
+  canvas.style.cursor = 'crosshair';
+
+  if(d.mode === 'pan'){ render(); return; }
+
+  if(d.mode === 'move'){
+    if(d.changed){ commitHistory(); }
+    else if(!d.shift && state.sel.size > 1){ state.sel.clear(); state.sel.add(d.hitId); }
+    render(); return;
+  }
+
+  if(d.mode === 'marquee'){ render(); return; }
+
+  if(d.mode === 'wire'){
+    const tp = pickPin(p, d.from);
+    if(tp){
+      touchHistory();
+      const w = addWire(d.from, { item: tp.item.id, pin: tp.idx });
+      if(w){ state.sel.clear(); state.sel.add(w.id); commitHistory(); toast('已连线：双击导线可加标签'); }
+      else { discardHistory(); }
+    }
+    render(); return;
+  }
+});
+
+canvas.addEventListener('dblclick', e => {
+  const p = toWorld(e);
+  const hit = pick(p);
+  if(hit && hit.kind === 'item') startEdit(hit.item);
+  else if(editing) endEdit(true);
+});
+
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  // Ctrl / Alt + 滚轮：调整选中对象的标签字号
+  if((e.ctrlKey || e.altKey) && state.sel.size){
+    changeFontSize(e.deltaY < 0 ? FS_STEP : -FS_STEP, false);
+    return;
+  }
+  const r = canvas.getBoundingClientRect();
+  const mx = e.clientX - r.left, my = e.clientY - r.top;
+  const wx = (mx - view.x) / view.z, wy = (my - view.y) / view.z;
+  const f = e.deltaY < 0 ? 1.12 : 1/1.12;
+  view.z = Math.max(0.25, Math.min(4, view.z * f));
+  view.x = mx - wx * view.z;
+  view.y = my - wy * view.z;
+  render();
+}, { passive:false });
+
+/* ---------- 标签编辑 ---------- */
+function startEdit(it){
+  editing = it;
+  let anchor;
+  if(it.kind === 'wire'){
+    const path = wirePath(it);
+    anchor = path ? pathMid(path) : { x: 0, y: 0 };
+  } else {
+    anchor = { x: it.x, y: it.y };
+  }
+  const sx = anchor.x * view.z + view.x;
+  const sy = anchor.y * view.z + view.y;
+  labelEditor.style.left = (canvas.offsetLeft + sx) + 'px';
+  labelEditor.style.top  = (canvas.offsetTop  + sy) + 'px';
+  labelEditor.style.display = 'block';
+  labelEditor.style.fontSize = fsOf(it) + 'px';
+  labelEditor.value = it.label || '';
+  labelEditor.focus();
+  labelEditor.select();
+}
+function endEdit(apply){
+  if(!editing){ labelEditor.style.display = 'none'; return; }
+  const it = editing;
+  editing = null;
+  labelEditor.style.display = 'none';
+  if(apply){
+    const v = labelEditor.value.trim();
+    if(v !== (it.label || '')){ touchHistory(); it.label = v; commitHistory(); }
+  }
+  render();
+}
+labelEditor.addEventListener('keydown', e => {
+  e.stopPropagation();
+  if(e.key === 'Enter'){ e.preventDefault(); endEdit(true); }
+  if(e.key === 'Escape'){ e.preventDefault(); endEdit(false); }
+});
+labelEditor.addEventListener('blur', () => endEdit(true));
+
+/* ============================================================
+ *  编辑操作
+ * ============================================================ */
+/* 标签字号调整：有选中 → 改选中对象；无选中 → 改新建对象的默认字号；all → 全部对象 */
+function changeFontSize(delta, all){
+  const list = all ? state.items.slice() : selectedItems();
+  if(!list.length){
+    const nv = clampFS(defFS + delta);
+    if(nv === defFS){ toast('默认字号已是' + (delta > 0 ? '最大 ' : '最小 ') + defFS); return; }
+    defFS = nv;
+    updateFsVal(); render();
+    toast('新建对象的默认标签字号：' + defFS);
+    return;
+  }
+  touchHistory();
+  let changed = false;
+  for(const it of list){
+    const cur = (it.fs || defFS);
+    const nv = clampFS(cur + delta);
+    if(nv !== cur){ it.fs = nv; changed = true; }
+  }
+  if(!changed){ discardHistory(); toast('字号已是' + (delta > 0 ? '最大 ' : '最小 ') + '值 ' + FS_MAX + ' / ' + FS_MIN); return; }
+  commitHistory(); updateFsVal(); render();
+  toast('标签字号：' + fsOf(list[0]) + 'px' + (list.length > 1 ? '（' + list.length + ' 个对象）' : ''));
+}
+
+function setFontSize(v, all){
+  const list = all ? state.items.slice() : selectedItems();
+  if(!list.length){ defFS = clampFS(v); updateFsVal(); render(); return; }
+  touchHistory();
+  for(const it of list) it.fs = clampFS(v);
+  commitHistory(); updateFsVal(); render();
+}
+
+function updateFsVal(){
+  if(!fsValEl) return;
+  const s = selectedItems();
+  const v = s.length ? fsOf(s[0]) : defFS;
+  fsValEl.textContent = v;
+}
+
+function rotateSelection(dir){
+  const list = selectedItems().filter(i => i.kind !== 'wire');
+  if(!list.length){ toast('先选中元件（键盘 R 可旋转）'); return; }
+  touchHistory();
+  if(list.length === 1){
+    list[0].rot = normRot(list[0].rot + dir * 90);
+  } else {
+    let x0=Infinity, y0=Infinity, x1=-Infinity, y1=-Infinity;
+    for(const it of list){
+      const b = worldBox(it);
+      x0 = Math.min(x0,b.x0); y0 = Math.min(y0,b.y0);
+      x1 = Math.max(x1,b.x1); y1 = Math.max(y1,b.y1);
+    }
+    const cx = (x0+x1)/2, cy = (y0+y1)/2;
+    for(const it of list){
+      const r = rotPt({ x: it.x - cx, y: it.y - cy }, dir * 90);
+      it.x = snap(cx + r.x);
+      it.y = snap(cy + r.y);
+      it.rot = normRot(it.rot + dir * 90);
+    }
+  }
+  commitHistory(); render();
+}
+
+function deleteSelection(){
+  if(!state.sel.size){ toast('没有选中对象'); return; }
+  touchHistory();
+  const ids = new Set(state.sel);
+  state.items = state.items.filter(i => {
+    if(ids.has(i.id)) return false;
+    if(i.kind === 'wire' && (ids.has(i.a.item) || ids.has(i.b.item))) return false;
+    return true;
+  });
+  state.sel.clear();
+  commitHistory(); render();
+}
+
+function moveSelection(dx, dy){
+  const list = selectedItems().filter(i => i.kind !== 'wire');
+  if(!list.length) return;
+  touchHistory();
+  for(const it of list){ it.x += dx; it.y += dy; }
+  commitHistory(); render();
+}
+
+function duplicateSelection(){
+  const list = selectedItems();
+  if(!list.length) return;
+  touchHistory();
+  const map = new Map();
+  state.sel.clear();
+  for(const it of list){
+    if(it.kind === 'wire') continue;
+    const copy = JSON.parse(JSON.stringify(it));
+    copy.id = uid(it.kind === 'port' ? 'p' : 'e');
+    copy.x += G * 2; copy.y += G * 2;
+    map.set(it.id, copy.id);
+    state.items.push(copy);
+    state.sel.add(copy.id);
+  }
+  for(const it of list){
+    if(it.kind !== 'wire') continue;
+    if(!map.has(it.a.item) || !map.has(it.b.item)) continue;
+    const copy = { kind:'wire', id: uid('w'), label: it.label || '',
+                   a: { item: map.get(it.a.item), pin: it.a.pin },
+                   b: { item: map.get(it.b.item), pin: it.b.pin } };
+    state.items.push(copy);
+    state.sel.add(copy.id);
+  }
+  commitHistory(); render();
+}
+
+function clearAll(){
+  if(!state.items.length) return;
+  if(!confirm('清空画布上的全部对象？')) return;
+  touchHistory();
+  state.items = []; state.sel.clear();
+  commitHistory(); render();
+}
+
+function fitView(){
+  const b = contentBBox();
+  if(!b){ view.z = 1; view.x = 120; view.y = 90; render(); return; }
+  const pad = 60;
+  const zx = cssW / (b.x1 - b.x0 + pad*2);
+  const zy = cssH / (b.y1 - b.y0 + pad*2);
+  view.z = Math.max(0.25, Math.min(3, Math.min(zx, zy)));
+  view.x = (cssW - (b.x1 - b.x0) * view.z) / 2 - b.x0 * view.z;
+  view.y = (cssH - (b.y1 - b.y0) * view.z) / 2 - b.y0 * view.z;
+  render();
+}
+
+function contentBBox(){
+  let x0=Infinity, y0=Infinity, x1=-Infinity, y1=-Infinity;
+  for(const it of state.items){
+    if(it.kind === 'wire'){
+      const path = wirePath(it);
+      if(!path) continue;
+      for(const q of path){
+        x0 = Math.min(x0,q.x); y0 = Math.min(y0,q.y);
+        x1 = Math.max(x1,q.x); y1 = Math.max(y1,q.y);
+      }
+    } else {
+      const b = worldBox(it);
+      x0 = Math.min(x0,b.x0); y0 = Math.min(y0,b.y0);
+      x1 = Math.max(x1,b.x1); y1 = Math.max(y1,b.y1);
+    }
+  }
+  if(!isFinite(x0)) return null;
+  return { x0, y0, x1, y1 };
+}
+
+/* ============================================================
+ *  导入 / 导出
+ * ============================================================ */
+function exportPNG(){
+  const b = contentBBox();
+  if(!b){ toast('画布是空的'); return; }
+  const pad = 40, z = 2;
+  const w = Math.ceil((b.x1 - b.x0 + pad*2) * z);
+  const h = Math.ceil((b.y1 - b.y0 + pad*2) * z);
+  if(w > 12000 || h > 12000){ toast('内容过大，请缩小后重试'); return; }
+
+  const tmp = document.createElement('canvas');
+  tmp.width = w; tmp.height = h;
+  const c2 = tmp.getContext('2d');
+  c2.fillStyle = '#fff';
+  c2.fillRect(0, 0, w, h);
+
+  const oldView = { x: view.x, y: view.y, z: view.z };
+  const oldGrid = showGrid;
+  const oldSel = state.sel;
+  const oldVS = VS;
+  view.x = 0; view.y = 0; view.z = z;
+  showGrid = false;
+  state.sel = new Set();
+  VS = z;
+
+  // 手动把世界原点平移到 (pad - b.x0)
+  const c = c2;
+  c.setTransform(z, 0, 0, z, (-b.x0 + pad) * z, (-b.y0 + pad) * z);
+
+  for(const wi of wireItems()){
+    const path = wirePath(wi);
+    if(!path) continue;
+    c.strokeStyle = WIRE; c.lineWidth = 2.2 / z;
+    c.lineJoin = 'round'; c.lineCap = 'round';
+    c.beginPath(); c.moveTo(path[0].x, path[0].y);
+    for(let i=1;i<path.length;i++) c.lineTo(path[i].x, path[i].y);
+    c.stroke();
+    c.fillStyle = WIRE;
+    DOT(c, path[0].x, path[0].y, 2.4/z);
+    DOT(c, path[path.length-1].x, path[path.length-1].y, 2.4/z);
+    if(wi.label){
+      const m = pathMid(path);
+      const fs = fsOf(wi);
+      setFont(c, fs); c.textAlign='center'; c.textBaseline='middle';
+      const tw = c.measureText(wi.label).width;
+      const padx = fs*0.32/z, pady = fs*0.72/z;
+      c.fillStyle = '#fff';
+      c.fillRect(m.x - tw/2 - padx, m.y - pady, tw + padx*2, pady*2);
+      c.fillStyle = WIRE; c.fillText(wi.label, m.x, m.y);
+    }
+  }
+  for(const it of partItems()){
+    const def = defOf(it);
+    c.save();
+    c.translate(it.x, it.y);
+    c.rotate(normRot(it.rot) * Math.PI / 180);
+    c.strokeStyle = INK; c.fillStyle = INK;
+    c.lineWidth = 2 / z; c.lineJoin = 'round'; c.lineCap = 'round';
+    def.draw(c, it);
+    c.restore();
+    c.fillStyle = PIN_COLOR;
+    for(const p of pinsOf(it)) DOT(c, p.x, p.y, 2.2/z);
+    if(it.label){
+      const bb = worldBox(it);
+      const fs = fsOf(it);
+      c.fillStyle = INK; setFont(c, fs);
+      c.textAlign='center'; c.textBaseline='bottom';
+      c.fillText(it.label, it.x, bb.y0 - (4 + fs*0.35)/z);
+    }
+  }
+
+  view.x = oldView.x; view.y = oldView.y; view.z = oldView.z;
+  showGrid = oldGrid; state.sel = oldSel; VS = oldVS;
+
+  tmp.toBlob(bl => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(bl);
+    a.download = '电路图_' + ts() + '.png';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+    toast('已导出 PNG');
+  }, 'image/png');
+}
+
+function saveJSON(){
+  const data = JSON.stringify({ v:1, items: state.items, nextId: state.nextId, counters: state.counters }, null, 1);
+  const bl = new Blob([data], { type:'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(bl);
+  a.download = '电路图_' + ts() + '.json';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+  toast('已保存 JSON');
+}
+
+function openJSON(){
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.accept = '.json,application/json';
+  inp.onchange = () => {
+    const f = inp.files && inp.files[0];
+    if(!f) return;
+    const fr = new FileReader();
+    fr.onload = () => {
+      try{
+        const o = JSON.parse(String(fr.result));
+        touchHistory();
+        state.items = o.items || [];
+        state.nextId = o.nextId || (state.items.length + 1);
+        state.counters = o.counters || {};
+        state.sel.clear();
+        commitHistory();
+        fitView();
+        toast('已载入 ' + state.items.length + ' 个对象');
+      }catch(err){ toast('文件格式不对'); }
+    };
+    fr.readAsText(f);
+  };
+  inp.click();
+}
+
+function ts(){
+  const d = new Date(), p = n => String(n).padStart(2,'0');
+  return d.getFullYear() + p(d.getMonth()+1) + p(d.getDate()) + '_' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+}
+
+/* ============================================================
+ *  工具栏 / 快捷键
+ * ============================================================ */
+function updateButtons(){
+  const q = a => document.querySelector('button[data-act="' + a + '"]');
+  q('undo').disabled = !undoStack.length;
+  q('redo').disabled = !redoStack.length;
+}
+
+function buildPalette(){
+  const pal = document.getElementById('palette');
+  for(const grp of GROUPS){
+    const t = document.createElement('div');
+    t.className = 'group'; t.textContent = grp.name;
+    pal.appendChild(t);
+    const row = document.createElement('div');
+    row.className = 'grid';
+    for(const type of grp.items){
+      const def = type === 'port' ? PORT_DEF : PARTS[type];
+      const el = document.createElement('div');
+      el.className = 'pal';
+      el.draggable = true;
+      el.dataset.type = type;
+      el.title = def.name + '（拖到画布）';
+      const cv = document.createElement('canvas');
+      cv.width = 112; cv.height = 76;
+      cv.style.width = '56px'; cv.style.height = '38px';
+      const c2 = cv.getContext('2d');
+      c2.setTransform(2, 0, 0, 2, 0, 0);
+      c2.translate(28, 19);
+      c2.scale(0.5, 0.5);
+      c2.strokeStyle = INK; c2.fillStyle = INK;
+      c2.lineWidth = 2; c2.lineJoin = 'round'; c2.lineCap = 'round';
+      const oldVS = VS; VS = 1;
+      def.draw(c2, { kind: type === 'port' ? 'port' : 'part', type, rot: 0, label: '' });
+      VS = oldVS;
+      const span = document.createElement('span');
+      span.textContent = def.name.replace(' 三极管','');
+      el.appendChild(cv); el.appendChild(span);
+      el.addEventListener('dragstart', ev => {
+        ev.dataTransfer.setData('text/plain', type);
+        ev.dataTransfer.effectAllowed = 'copy';
+      });
+      // 双击直接加到视图中央
+      el.addEventListener('dblclick', () => {
+        touchHistory();
+        const it = newItem(type, (cssW/2 - view.x)/view.z, (cssH/2 - view.y)/view.z);
+        state.items.push(it);
+        state.sel.clear(); state.sel.add(it.id);
+        commitHistory(); render();
+      });
+      row.appendChild(el);
+    }
+    pal.appendChild(row);
+  }
+}
+
+cvwrap.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+cvwrap.addEventListener('drop', e => {
+  e.preventDefault();
+  const type = e.dataTransfer.getData('text/plain');
+  if(!type || !(PARTS[type] || type === 'port')) return;
+  const r = canvas.getBoundingClientRect();
+  const p = { x: (e.clientX - r.left - view.x) / view.z, y: (e.clientY - r.top - view.y) / view.z };
+  touchHistory();
+  const it = newItem(type, p.x, p.y);
+  state.items.push(it);
+  state.sel.clear(); state.sel.add(it.id);
+  commitHistory(); render();
+  toast('已放置 ' + (type === 'port' ? PORT_DEF.name : PARTS[type].name));
+});
+
+document.getElementById('bar').addEventListener('click', e => {
+  const b = e.target.closest('button[data-act]');
+  if(!b) return;
+  const act = b.dataset.act;
+  if(act === 'rot-cw') rotateSelection(1);
+  else if(act === 'rot-ccw') rotateSelection(-1);
+  else if(act === 'del') deleteSelection();
+  else if(act === 'fs-up') changeFontSize(FS_STEP, e.shiftKey);
+  else if(act === 'fs-down') changeFontSize(-FS_STEP, e.shiftKey);
+  else if(act === 'undo') undo();
+  else if(act === 'redo') redo();
+  else if(act === 'selall'){ state.sel = new Set(state.items.map(i => i.id)); render(); }
+  else if(act === 'clear') clearAll();
+  else if(act === 'grid'){ showGrid = !showGrid; b.classList.toggle('on', showGrid); render(); }
+  else if(act === 'fit') fitView();
+  else if(act === 'png') exportPNG();
+  else if(act === 'save') saveJSON();
+  else if(act === 'open') openJSON();
+});
+
+window.addEventListener('keydown', e => {
+  if(e.target === labelEditor) return;
+  const mod = e.ctrlKey || e.metaKey;
+
+  if(e.code === 'Space'){ spaceDown = true; canvas.style.cursor = 'grab'; e.preventDefault(); return; }
+
+  if(mod && e.key.toLowerCase() === 'z'){ e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
+  if(mod && e.key.toLowerCase() === 'y'){ e.preventDefault(); redo(); return; }
+  if(mod && e.key.toLowerCase() === 'a'){ e.preventDefault(); state.sel = new Set(state.items.map(i => i.id)); render(); return; }
+  if(mod && e.key.toLowerCase() === 'd'){ e.preventDefault(); duplicateSelection(); return; }
+  if(mod && e.key.toLowerCase() === 's'){ e.preventDefault(); saveJSON(); return; }
+
+  if(e.key === 'r' || e.key === 'R'){ e.preventDefault(); rotateSelection(e.shiftKey ? -1 : 1); return; }
+  if(e.key === '[' || e.key === '-' || e.key === '_'){ e.preventDefault(); changeFontSize(-FS_STEP, false); return; }
+  if(e.key === ']' || e.key === '=' || e.key === '+'){ e.preventDefault(); changeFontSize(FS_STEP, false); return; }
+  if(e.key === 'Delete' || e.key === 'Backspace'){ e.preventDefault(); deleteSelection(); return; }
+  if(e.key === 'Escape'){ state.sel.clear(); render(); return; }
+  if(e.key === 'F2'){ const s = selectedItems()[0]; if(s) startEdit(s); return; }
+  if(e.key === 'ArrowLeft'){ e.preventDefault(); moveSelection(-G, 0); return; }
+  if(e.key === 'ArrowRight'){ e.preventDefault(); moveSelection(G, 0); return; }
+  if(e.key === 'ArrowUp'){ e.preventDefault(); moveSelection(0, -G); return; }
+  if(e.key === 'ArrowDown'){ e.preventDefault(); moveSelection(0, G); return; }
+});
+window.addEventListener('keyup', e => {
+  if(e.code === 'Space'){ spaceDown = false; if(!drag) canvas.style.cursor = 'crosshair'; }
+});
+
+/* ---------- 提示 ---------- */
+let toastTimer = null;
+function toast(msg){
+  toastEl.textContent = msg;
+  toastEl.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove('show'), 1800);
+}
+
+/* ============================================================
+ *  示例电路 + 启动
+ * ============================================================ */
+buildPalette();
+resize();
+updateButtons();
+render();
+
+// 首次打开放一个小的示例电路，方便直接看懂操作
+(function seed(){
+  const bat = newItem('battery', 320, 300);
+  const sw  = newItem('sw', 320, 140);
+  const res = newItem('resistor', 480, 140);
+  const lam = newItem('lamp', 640, 140);
+  const gnd = newItem('gnd', 740, 420);
+  state.items.push(bat, sw, res, lam, gnd);
+  const P = (item, pin) => ({ item: item.id, pin });
+  addWire(P(bat,0), P(sw,0));    // 电源正极 → 开关
+  addWire(P(sw,1),  P(res,0));   // 开关 → 电阻
+  addWire(P(res,1), P(lam,0));   // 电阻 → 灯泡
+  addWire(P(lam,1), P(gnd,0));   // 灯泡 → 接地
+  addWire(P(gnd,0), P(bat,1));   // 接地 → 电源负极
+  state.sel.clear();
+  undoStack.length = 0; redoStack.length = 0;
+  updateButtons();
+  render();
+})();
+
+window.CircuitSketch = {
+  state, render, undo, redo, fitView, exportPNG, saveJSON, addWire, newItem,
+  rotateSelection, deleteSelection, duplicateSelection, marqueeHits, getItem,
+  changeFontSize, setFontSize, fsOf,
+  // 调试/测试钩子
+  _geo: { routePoints, wirePath, resolveEnd, pinsOf, worldBox, snap, rotPt, startEdit, endEdit },
+  _dbg: () => ({ drag: drag ? drag.mode : null, editing: editing ? editing.id : null,
+                 hover: hoverPin ? hoverPin.item.id : null,
+                 preview: drag && drag.preview ? drag.preview.length : 0,
+                 target: drag && drag.targetPin ? drag.targetPin.item.id : null,
+                 defFS: defFS }),
+};
+
+})();
+</script>
+</body>
+</html>
